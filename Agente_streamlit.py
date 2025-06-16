@@ -6,6 +6,8 @@ import streamlit as st
 import google.generativeai as genai
 import os
 import json
+import zipfile
+import io
 
 # --- Configuração de Estilo e Avisos ---
 warnings.filterwarnings('ignore')
@@ -13,7 +15,7 @@ sns.set_theme(style="whitegrid")
 
 # --- INTERFACE DO STREAMLIT (Início) ---
 st.set_page_config(layout="wide")
-st.title("🤖 Agente de Análise de Notas Fiscais - Grupo Quantum -I2A2")
+st.title("🤖 Agente de Análise de Notas Fiscais com Gemini 1.5 e Ferramentas")
 
 # --- CONFIGURAÇÃO DA API GEMINI (Lógica Aprimorada) ---
 # Tenta obter a chave dos segredos (ideal para deploy no Streamlit Cloud)
@@ -244,40 +246,71 @@ class AgenteNotasFiscais:
             st.error(f"Ocorreu um erro ao consultar a IA: {e}")
             return "Desculpe, não consegui processar sua pergunta."
 
-# --- SEÇÃO PRINCIPAL DA INTERFACE ---
-st.header("1. Upload dos Arquivos de Notas Fiscais")
-col1, col2 = st.columns(2)
-with col1:
-    uploaded_cabecalho_file = st.file_uploader("Arquivo de Cabeçalho (CSV)", type="csv")
-with col2:
-    uploaded_itens_file = st.file_uploader("Arquivo de Itens (CSV)", type="csv")
-
-def load_dataframe(uploaded_file):
-    if uploaded_file is None:
-        return None
+# --- FUNÇÃO PARA PROCESSAR ARQUIVO ZIP ---
+def processar_arquivo_zip(uploaded_zip_file):
+    df_cabecalho = None
+    df_itens = None
+    
     try:
-        return pd.read_csv(uploaded_file, sep=';', encoding='latin1')
-    except Exception:
-        try:
-            uploaded_file.seek(0)
-            return pd.read_csv(uploaded_file, sep=',', encoding='utf-8')
-        except Exception as e:
-            st.error(f"Não foi possível ler o arquivo {uploaded_file.name}. Verifique o formato. Erro: {e}")
-            return None
+        with zipfile.ZipFile(uploaded_zip_file, 'r') as z:
+            # Encontra os nomes dos arquivos de cabeçalho e itens
+            nome_arquivo_cabecalho = None
+            nome_arquivo_itens = None
+            
+            for filename in z.namelist():
+                if "cabecalho" in filename.lower() and filename.endswith('.csv'):
+                    nome_arquivo_cabecalho = filename
+                elif "itens" in filename.lower() and filename.endswith('.csv'):
+                    nome_arquivo_itens = filename
+
+            if nome_arquivo_cabecalho:
+                with z.open(nome_arquivo_cabecalho) as f:
+                    # Tenta diferentes separadores e encodings
+                    try:
+                        df_cabecalho = pd.read_csv(f, sep=';', encoding='latin1')
+                    except Exception:
+                        f.seek(0) # Volta para o início do arquivo em memória
+                        df_cabecalho = pd.read_csv(f, sep=',', encoding='utf-8')
+                st.success(f"Arquivo de cabeçalho '{nome_arquivo_cabecalho}' lido com sucesso.")
+            else:
+                st.error("Arquivo CSV contendo 'cabeçalho' não encontrado no ZIP.")
+
+            if nome_arquivo_itens:
+                with z.open(nome_arquivo_itens) as f:
+                    try:
+                        df_itens = pd.read_csv(f, sep=';', encoding='latin1')
+                    except Exception:
+                        f.seek(0)
+                        df_itens = pd.read_csv(f, sep=',', encoding='utf-8')
+                st.success(f"Arquivo de itens '{nome_arquivo_itens}' lido com sucesso.")
+            else:
+                st.error("Arquivo CSV contendo 'itens' não encontrado no ZIP.")
+
+    except Exception as e:
+        st.error(f"Erro ao processar o arquivo ZIP: {e}")
+        return None, None
+        
+    return df_cabecalho, df_itens
+
+# --- SEÇÃO PRINCIPAL DA INTERFACE ---
+st.header("1. Upload da Pasta Compactada (.zip)")
+uploaded_zip_file = st.file_uploader(
+    "Faça o upload de um arquivo .zip contendo os CSVs de 'cabeçalho' e 'itens'.",
+    type="zip"
+)
 
 if 'agente' not in st.session_state:
     st.session_state.agente = None
 
-if uploaded_cabecalho_file and uploaded_itens_file:
-    if st.button("Analisar Arquivos e Iniciar Agente"):
-        df_cabecalho = load_dataframe(uploaded_cabecalho_file)
-        df_itens = load_dataframe(uploaded_itens_file)
+if uploaded_zip_file:
+    if st.button("Analisar Arquivo e Iniciar Agente"):
+        df_cabecalho, df_itens = processar_arquivo_zip(uploaded_zip_file)
 
         if df_cabecalho is not None and df_itens is not None:
             with st.spinner("Inicializando o agente com os dados..."):
                 st.session_state.agente = AgenteNotasFiscais(df_cabecalho, df_itens)
         else:
-            st.error("Falha ao carregar um ou ambos os arquivos. O agente não pode ser iniciado.")
+            st.error("Falha ao carregar dados do arquivo ZIP. Verifique o conteúdo e tente novamente.")
 
 st.header("2. Converse com o Agente")
 st.sidebar.header("Exemplos de Perguntas")
@@ -299,4 +332,4 @@ if st.session_state.agente:
         st.subheader("Resposta do Agente:")
         st.markdown(response_text)
 else:
-    st.info("Faça o upload dos arquivos e clique em 'Analisar' para começar.")
+    st.info("Faça o upload do arquivo .zip e clique em 'Analisar' para começar.")
